@@ -33,12 +33,13 @@ class Kernel:
         self.cond_mean = None
         self.l = l
         self.d = d
+        self.A = []
         self._initialize()
     
     def _initialize(self):
         self._init_ds_loc()
         self._init_ds_eig()
-        #self._init_ss_cov()        
+        self._init_base_cond_cov()        
         #self._init_cond_cov()
 
     def _init_ds_loc(self):
@@ -56,10 +57,22 @@ class Kernel:
             ds_cov = self.all_cov[np.ix_(loc,loc)]
             if len(ds_cov) == 0:
                 self.ds_eig.append(())
+                self.A.append(())
             else:
                 s,u = np.linalg.eigh(ds_cov)
-                s_inv = _pinv_1d(s)
-                self.ds_eig.append((s_inv,u))
+                #s_inv = _pinv_1d(s)
+                self.ds_eig.append((s,u))
+                self.A.append(self.all_cov[np.ix_(self.ss_loc[i],loc)] @ u)
+    
+    def _init_base_cond_cov(self):
+        self.base_cond_cov = []
+        for i,loc in enumerate(self.ds_loc):
+            if len(loc) == 0:
+                self.base_cond_cov.append(self.all_cov[np.ix_(self.ss_loc[i],self.ss_loc[i])])
+            else:
+                self.base_cond_cov.append(self.all_cov[np.ix_(self.ss_loc[i],self.ss_loc[i])] - np.multiply(1/self.ds_eig[i][0],self.A[i])@self.A[i].T)
+
+
 
 class Gaussian:
     def __init__(self,kernel,mean=0,sigma_sq=1,delta=1) -> None:
@@ -75,6 +88,39 @@ class Gaussian:
         self.delta = delta
         self.cond_eig = []
         self.temp = []
+        self.cond_cov = []
+    
+    def update_cond_conv(self):
+        for i in range(self.kernel.M):
+            if len(self.kernel.dependency[i]) == 0:
+                #self.cond_cov.append(self.kernel.base_cond_cov[i]+self.delta*np.eye(len(self.kernel.ss_loc[i])))
+                s,u = np.linalg.eigh(self.kernel.base_cond_cov[i]+self.delta*np.eye(len(self.kernel.ss_loc[i])))
+            else:
+                s,u = np.linalg.eigh(self.kernel.base_cond_cov[i]+self.delta*np.eye(len(self.kernel.ss_loc[i]))+self.delta*np.multiply(1/((self.ds_eig[i][0]+self.delta)*self.ds_eig[i][0]),self.A[i])@self.A[i].T)
+            self.cond_conv.append((s,u))
+
+    def ll_sep(self,Y):
+        """
+        Y: observation of dimension N*G
+        """
+        N,G = Y.shape
+        ll = np.log(2 * np.pi)*N + 2*np.log(self.sigma_sq)*N
+        result = np.array([-0.5*ll]*G)
+        dev = Y - self.all_mean    #N*G
+        self.update_cond_conv()
+        for i in range(self.M):
+            det = np.prod(self.cond_cov[i][0])
+            result += np.log(det)
+
+            
+            if len(self.dependency[i]) == 0:
+            
+                cond_dev = dev[self.ss_loc[i]]
+            else:
+                cond_dev = self.get_cond_dev(dev,i)
+            for g in range(G):
+                result[g] += -0.5* (cond_dev[:,g].T @ inv @ cond_dev[:,g])
+        return np.array(result)
     
     def _init_cond_cov(self):
         eps = 1e-5
